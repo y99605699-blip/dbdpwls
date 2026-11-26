@@ -16,12 +16,14 @@ def find_sheet(key):
     raise ValueError('필요한 시트를 찾지 못했습니다: ' + key + ' / 이 파일의 시트: ' + ', '.join(book))
 
 def is_sector_code(c):
+    """부문 코드 여부. 대분류처럼 A, C01 등 영문 포함 코드도 허용하고,
+    9000 이상의 순수 숫자 코드(9090, 9590 등 합계·분석지표)만 제외한다."""
     c = str(c).strip()
     if c in ('', 'None'):
         return False
     if c.isdigit():
-        return int(c) < 9000   # 9xxx는 합계·분석지표 행/열
-    return False
+        return int(c) < 9000
+    return True
 
 def initialize(raw):
     global book, codes, names, L, M, V, sheets, valid
