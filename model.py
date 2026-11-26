@@ -26,7 +26,7 @@ def is_sector_code(c):
     return True
 
 def initialize(raw):
-    global book, codes, names, L, M, V, sheets, valid
+    global book, codes, names, L, M, V, sheets, valid, income
     wb = openpyxl.load_workbook(io.BytesIO(bytes(raw)), read_only=True, data_only=True)
     book = {s: list(wb[s].values) for s in wb.sheetnames}
     wb.close()
@@ -66,6 +66,18 @@ def initialize(raw):
         v = np.array([vr[ci[c]] for c in codes], dtype=float)
     else:
         v = 1.0 - (ad + am).sum(axis=0)
+
+    # 부가가치 구성: 피용자보수(9610) 영업잉여(9621) 고정자본소모(9622) 생산세(9630)
+    income = None
+    try:
+        byc = {str(r[0]).strip(): r for r in rows[6:] if r and r[0] is not None}
+        want = {'comp': '9610', 'surplus': '9621', 'dep': '9622', 'tax': '9630'}
+        if all(c in byc for c in want.values()):
+            tmp = {k: np.array([byc[c][ci[s]] for s in codes], dtype=float) for k, c in want.items()}
+            if np.allclose(sum(tmp.values()), v, atol=1e-8):
+                income = tmp
+    except Exception:
+        income = None
 
     n = len(codes)
     residuals = {'생산': float(np.max(np.abs((np.eye(n) - ad) @ L - np.eye(n)))),
@@ -111,8 +123,15 @@ def simulate(payload):
     result = [{'code': c, 'name': n, 'production': float(a), 'imports': float(b), 'valueAdded': float(d)}
               for c, n, a, b, d in zip(codes, names, x, m, v)]
     result.sort(key=lambda r: r['production'], reverse=True)
-    return emit({'demand': float(f.sum()), 'production': float(x.sum()), 'imports': float(m.sum()),
-                 'valueAdded': float(v.sum()), 'multiplier': float(x.sum() / f.sum()), 'rows': result})
+    out = {'demand': float(f.sum()), 'production': float(x.sum()), 'imports': float(m.sum()),
+           'valueAdded': float(v.sum()), 'multiplier': float(x.sum() / f.sum()), 'rows': result,
+           'income': None}
+    if income is not None:
+        out['income'] = {'compensation': float((income['comp'] * x).sum()),
+                         'surplus': float((income['surplus'] * x).sum()),
+                         'depreciation': float((income['dep'] * x).sum()),
+                         'tax': float((income['tax'] * x).sum())}
+    return emit(out)
 
 
 def linkage():
@@ -134,3 +153,43 @@ def linkage():
              'production': float(p), 'valueAdded': float(v), 'imports': float(i), 'type': kind(a, b)}
             for c, nm, a, b, p, v, i in zip(codes, names, infl, sens, col, va, im)]
     return emit({'rows': rows})
+
+
+def demand_structure():
+    """최종수요 항목(민간소비·정부소비·투자·수출 등)별 유발액 구조."""
+    def read(key):
+        rows = book[find_sheet(key)]
+        hdr = rows[4]
+        cols = [(i, str(hdr[i]).strip(), str(rows[5][i] or '').replace('\n', '').strip())
+                for i in range(2, len(hdr)) if hdr[i] is not None]
+        byrow = {str(r[0]).strip(): r for r in rows[6:] if r and r[0] is not None}
+        return cols, byrow
+
+    cols, byrow = read('최종수요 항목별 생산유발액')
+    items = [{'code': c, 'name': nm} for i, c, nm in cols if c != '9190']
+    idx = {c: i for i, c, nm in cols}
+    def val(r, c):
+        x = r[idx[c]] if idx[c] < len(r) else None
+        return float(x) if isinstance(x, (int, float)) else 0.0
+    rows_out = []
+    for c, nm in zip(codes, names):
+        r = byrow.get(c)
+        if r is None:
+            continue
+        by = {it['code']: val(r, it['code']) for it in items}
+        total = val(r, '9190') if '9190' in idx else sum(by.values())
+        rows_out.append({'code': c, 'name': nm, 'total': total, 'by': by})
+
+    economy = {}
+    for label, key in (('production', '최종수요 항목별 생산유발액'),
+                       ('imports', '최종수요 항목별 수입유발액'),
+                       ('valueAdded', '최종수요 항목별 부가가치유발액')):
+        try:
+            cc, br = read(key)
+            ix = {c: i for i, c, nm in cc}
+            economy[label] = {it['code']: float(sum(
+                (br[s][ix[it['code']]] if s in br and isinstance(br[s][ix[it['code']]], (int, float)) else 0.0)
+                for s in codes)) for it in items if it['code'] in ix}
+        except Exception:
+            pass
+    return emit({'items': items, 'rows': rows_out, 'economy': economy})
