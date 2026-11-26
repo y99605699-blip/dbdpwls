@@ -22,7 +22,7 @@ async function load(buffer){
  try{const info=await call('init',buffer);sectors=info.sectors;options($('sector'),sectors);$('sector-search').value='';$('row-search').value='';$('col-search').value='';$('sheet').replaceChildren(...info.sheets.map(s=>{const o=text('option',s);o.value=s;return o;}));
  $('validation').textContent=JSON.stringify(info.residuals,null,2)+'\n최대 절대 잔차: 허용값 1e-8 미만';
  for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount'])$(id).disabled=false;
- await explore();$('status').textContent='준비 완료 · '+DATASETS[currentKey].label+' · '+sectors.length+'개 부문 · '+info.sheets.length+'개 시트 · 계수 검증 통과';
+ await explore();loadLinkage();$('status').textContent='준비 완료 · '+DATASETS[currentKey].label+' · '+sectors.length+'개 부문 · '+info.sheets.length+'개 시트 · 계수 검증 통과';
  }catch(e){$('status').textContent='준비 실패: '+e.message+' — 새로고침 후 재시도하세요.';}
 }
 let exploreSeq=0;
@@ -77,3 +77,47 @@ loadBtn.onclick=async()=>{
   if($('sheet').disabled){loadBtn.disabled=false;loadBtn.textContent=DATASETS[key].label+' 다시 불러오기';}
  }
 };
+
+
+// ===== 3. 산업 연쇄효과 분석 (영향력계수·감응도계수) =====
+let linkRows=[];
+const host=document.getElementById('simulation')||document.querySelector('main')||document.body;
+const linkSec=document.createElement('section');
+linkSec.id='linkage';
+if(host.className)linkSec.className=host.className;
+linkSec.innerHTML=`
+<h2>3. 산업 연쇄효과 분석</h2>
+<p>생산유발계수 역행렬의 열합·행합으로 산출합니다. 영향력계수(후방연쇄)와 감응도계수(전방연쇄)는 전 산업 평균을 1로 한 상대값이며 단위가 없습니다. 생산·부가가치·수입 유발계수 합은 최종수요 1단위(원/원)당 유발되는 크기입니다.</p>
+<div>
+ <input id="link-search" type="search" placeholder="산업 검색" disabled>
+ <select id="link-sort" disabled>
+  <option value="influence">영향력계수 높은 순</option>
+  <option value="sensitivity">감응도계수 높은 순</option>
+  <option value="production">생산유발계수 합 높은 순</option>
+  <option value="valueAdded">부가가치유발계수 합 높은 순</option>
+  <option value="imports">수입유발계수 합 높은 순</option>
+ </select>
+ <select id="link-type" disabled>
+  <option value="">전체 유형</option>
+  <option>중추 산업</option><option>최종수요 지향</option><option>중간수요 지향</option><option>독립 산업</option>
+ </select>
+</div>
+<p id="link-status">분류를 불러오면 표시됩니다.</p>
+<div style="overflow-x:auto;max-height:480px;overflow-y:auto">
+<table><thead><tr><th>코드</th><th>산업</th><th>영향력계수</th><th>감응도계수</th><th>생산유발계수 합</th><th>부가가치유발계수 합</th><th>수입유발계수 합</th><th>유형</th></tr></thead>
+<tbody id="link-rows"></tbody></table></div>`;
+host.insertAdjacentElement('afterend',linkSec);
+const f3=x=>Number(x).toLocaleString('ko-KR',{minimumFractionDigits:3,maximumFractionDigits:3});
+function renderLinkage(){
+ const q=$('link-search').value.trim(),t=$('link-type').value,k=$('link-sort').value;
+ const list=linkRows.filter(r=>(r.code+' '+r.name).includes(q)&&(!t||r.type.startsWith(t))).sort((x,y)=>y[k]-x[k]);
+ $('link-rows').replaceChildren(...list.map(r=>{const tr=document.createElement('tr');[r.code,r.name,f3(r.influence),f3(r.sensitivity),f3(r.production),f3(r.valueAdded),f3(r.imports),r.type].forEach(v=>tr.append(text('td',v)));return tr;}));
+ $('link-status').textContent=list.length+'개 산업 표시 (전체 '+linkRows.length+'개). 영향력·감응도계수 1 이상이면 평균 이상입니다.';
+}
+async function loadLinkage(){
+ for(const id of ['link-search','link-sort','link-type'])$(id).disabled=true;
+ $('link-status').textContent='계산 중…';
+ try{linkRows=(await call('linkage')).rows;renderLinkage();for(const id of ['link-search','link-sort','link-type'])$(id).disabled=false;}
+ catch(e){$('link-status').textContent='연쇄효과 계산 실패: '+e.message;}
+}
+$('link-search').oninput=renderLinkage;$('link-sort').onchange=renderLinkage;$('link-type').onchange=renderLinkage;
