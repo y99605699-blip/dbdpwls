@@ -10,7 +10,7 @@ async function handle({id,type,payload}) {
       py=await loadPyodide({indexURL:BASE});
       await py.loadPackage(['numpy','micropip']);
       await py.runPythonAsync("import micropip\nawait micropip.install('openpyxl==3.1.5')");
-      const response=await fetch('./model.py');
+      const response=await fetch('./model.py?v='+Date.now(),{cache:'no-store'});
       if(!response.ok) throw Error('model.py를 불러올 수 없습니다.');
       await py.runPythonAsync(await response.text());
       postMessage({type:'status',text:'Excel 읽기와 계수 검증 중…'});
@@ -24,6 +24,8 @@ async function handle({id,type,payload}) {
       result=py.runPython('explore(sheet_input, row_input)');
     } else if(type==='linkage') {
       result=py.runPython('linkage()');
+    } else if(type==='demand') {
+      result=py.runPython('demand_structure()');
     } else if(type==='simulate') {
       py.globals.set('scenario_input',JSON.stringify(payload));
       result=py.runPython('simulate(scenario_input)');
