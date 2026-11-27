@@ -1,4 +1,5 @@
 const BASE = 'https://cdn.jsdelivr.net/pyodide/v0.27.7/full/';
+const BUILD=new URL(self.location.href).searchParams.get('v')||'';
 let py;
 let chain = Promise.resolve();
 async function handle({id,type,payload}) {
@@ -10,7 +11,7 @@ async function handle({id,type,payload}) {
       py=await loadPyodide({indexURL:BASE});
       await py.loadPackage(['numpy','micropip']);
       await py.runPythonAsync("import micropip\nawait micropip.install('openpyxl==3.1.5')");
-      const response=await fetch('./model.py?v='+Date.now(),{cache:'no-store'});
+      const response=await fetch('./model.py?v='+BUILD+'&t='+Date.now(),{cache:'no-store'});
       if(!response.ok) throw Error('model.py를 불러올 수 없습니다.');
       await py.runPythonAsync(await response.text());
       postMessage({type:'status',text:'Excel 읽기와 계수 검증 중…'});
@@ -47,7 +48,9 @@ async function handle({id,type,payload}) {
     } else {
       throw Error('알 수 없는 요청: '+type);
     }
-    postMessage({id,ok:true,result:JSON.parse(result)});
+    const parsed=JSON.parse(result);
+    if(type==='init')parsed.workerBuild=BUILD;
+    postMessage({id,ok:true,result:parsed});
   } catch(error) { postMessage({id,ok:false,error:String(error)}); }
 }
 onmessage=e=>{ chain=chain.then(()=>handle(e.data)); };
