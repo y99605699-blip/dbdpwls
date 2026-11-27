@@ -24,6 +24,21 @@ async function handle({id,type,payload}) {
       result=py.runPython('explore(sheet_input, row_input)');
     } else if(type==='linkage') {
       result=py.runPython('linkage()');
+    } else if(type==='price') {
+      py.globals.set('price_input',JSON.stringify(payload));
+      result=py.runPython('price_shock(price_input)');
+    } else if(type==='extraction') {
+      py.globals.set('ext_input',JSON.stringify(payload));
+      result=py.runPython('extraction(ext_input)');
+    } else if(type==='paths') {
+      py.globals.set('paths_input',JSON.stringify(payload));
+      result=py.runPython('paths(paths_input)');
+    } else if(type==='substitute') {
+      py.globals.set('sub_input',JSON.stringify(payload));
+      result=py.runPython('import_substitution(sub_input)');
+    } else if(type==='evaluate') {
+      py.globals.set('eval_input',JSON.stringify(payload));
+      result=py.runPython('evaluate(eval_input)');
     } else if(type==='demand') {
       result=py.runPython('demand_structure()');
     } else if(type==='simulate') {
