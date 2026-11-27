@@ -1,3 +1,4 @@
+BUILD = '2026-11-27-r2'
 import json, io
 import numpy as np
 import openpyxl
@@ -100,7 +101,7 @@ def initialize(raw):
     if not valid:
         raise ValueError('계수 검증 실패: ' + str(residuals))
     return emit({'sectors': [{'code': c, 'name': nme} for c, nme in zip(codes, names)],
-                 'sheets': sheets, 'residuals': residuals})
+                 'sheets': sheets, 'residuals': residuals, 'build': BUILD})
 
 def explore(sheet, rowcode):
     rows = book[sheet]
