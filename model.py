@@ -26,7 +26,7 @@ def is_sector_code(c):
     return True
 
 def initialize(raw):
-    global book, codes, names, L, M, V, sheets, valid, income
+    global book, codes, names, L, M, V, sheets, valid, income, AD, AM, vcoef, fdom
     wb = openpyxl.load_workbook(io.BytesIO(bytes(raw)), read_only=True, data_only=True)
     book = {s: list(wb[s].values) for s in wb.sheetnames}
     wb.close()
@@ -78,6 +78,19 @@ def initialize(raw):
                 income = tmp
     except Exception:
         income = None
+
+    AD = ad; AM = am; vcoef = v
+
+    # 국산 최종수요(국산거래표의 최종수요계, 코드 9190): 수입대체 시뮬레이션의 기준 수요
+    fdom = None
+    try:
+        r2 = book[find_sheet('국산거래표')]
+        c2 = {str(c).strip(): i for i, c in enumerate(r2[4]) if c is not None}
+        b2 = {str(r[0]).strip(): r for r in r2[6:] if r and r[0] is not None}
+        if '9190' in c2:
+            fdom = np.array([float(b2[c][c2['9190']]) for c in codes], dtype=float)
+    except Exception:
+        fdom = None
 
     n = len(codes)
     residuals = {'생산': float(np.max(np.abs((np.eye(n) - ad) @ L - np.eye(n)))),
@@ -149,9 +162,25 @@ def linkage():
         if a >= 1: return '최종수요 지향 (후방연쇄 강함)'
         if b >= 1: return '중간수요 지향 (전방연쇄 강함)'
         return '독립 산업 (전·후방 모두 약함)'
+    cvb = np.std(L, axis=0, ddof=1) / L.mean(axis=0)   # 후방 변동계수: 파급이 특정 산업에 몰린 정도
+    cvf = np.std(L, axis=1, ddof=1) / L.mean(axis=1)   # 전방 변동계수
+    imp = AM.sum(axis=0)                               # 직접 수입의존도(수입 중간투입 비율)
+    ext_o = ext_v = reach = None
+    if fdom is not None:
+        xb = L @ fdom
+        dg = np.diag(L)
+        ext_o = xb * col / dg / xb.sum() * 100            # k가 사라질 때 총산출 손실(%)
+        ext_v = xb * va / dg / (vcoef * xb).sum() * 100   # k가 사라질 때 부가가치 손실(%)
+        reach = (L @ (fdom / fdom.sum())) / dg           # k 가격이 100% 오를 때 최종수요 물가 상승분(비율)
     rows = [{'code': c, 'name': nm, 'influence': float(a), 'sensitivity': float(b),
-             'production': float(p), 'valueAdded': float(v), 'imports': float(i), 'type': kind(a, b)}
-            for c, nm, a, b, p, v, i in zip(codes, names, infl, sens, col, va, im)]
+             'production': float(p), 'valueAdded': float(vv), 'imports': float(i), 'type': kind(a, b),
+             'influenceCV': float(cb), 'sensitivityCV': float(cf),
+             'vaRatio': float(vr), 'importRatio': float(ir)}
+            for c, nm, a, b, p, vv, i, cb, cf, vr, ir in zip(codes, names, infl, sens, col, va, im, cvb, cvf, vcoef, imp)]
+    for j, r in enumerate(rows):
+        r['extOutput'] = None if ext_o is None else float(ext_o[j])
+        r['extVA'] = None if ext_v is None else float(ext_v[j])
+        r['priceReach'] = None if reach is None else float(reach[j])
     return emit({'rows': rows})
 
 
@@ -193,3 +222,126 @@ def demand_structure():
         except Exception:
             pass
     return emit({'items': items, 'rows': rows_out, 'economy': economy})
+
+
+def paths(payload):
+    """한 산업의 수요가 단계별(0차·1차·2차·3차·4차 이상)로 퍼지는 경로 분해: x = f + Ad f + Ad^2 f + ..."""
+    p = json.loads(payload); a = float(p['amount'])
+    if not np.isfinite(a) or a <= 0:
+        raise ValueError('양의 수요 증가액을 입력하세요.')
+    k = codes.index(p['code']); n = len(codes)
+    f = np.zeros(n); f[k] = a
+    total = L @ f
+    layers = []; cur = f.copy(); acc = np.zeros(n)
+    for _ in range(4):
+        layers.append(cur.copy()); acc += cur; cur = AD @ cur
+    rest = total - acc
+    labels = ['0차 · 최초 수요 충족', '1차 · 직접 투입 산업', '2차 · 투입의 투입', '3차', '4차 이상 (나머지)']
+    amounts = [float(l.sum()) for l in layers] + [float(rest.sum())]
+    def top(v, kk=8):
+        idx = np.argsort(-v)[:kk]
+        return [{'code': codes[i], 'name': names[i], 'amount': float(v[i])} for i in idx if v[i] > 0]
+    return emit({'demand': a, 'total': float(total.sum()),
+                 'rounds': [{'label': lb, 'amount': am_} for lb, am_ in zip(labels, amounts)],
+                 'top1': top(layers[1]), 'top2': top(layers[2]), 'topAll': top(total, 10)})
+
+def import_substitution(payload):
+    """수입 중간재의 r%를 같은 산업의 국산품으로 대체했을 때(가격·품질 동일 가정) 기준 국산 최종수요에서의 효과."""
+    if fdom is None:
+        raise ValueError('이 파일에서 국산 최종수요(국산거래표의 최종수요계)를 읽지 못해 계산할 수 없습니다.')
+    p = json.loads(payload); r = float(p['ratio']) / 100.0
+    if not (0 < r <= 1):
+        raise ValueError('대체 비율은 0 초과 100 이하로 입력하세요.')
+    n = len(codes)
+    targets = list(range(n)) if p['code'] == 'ALL' else [codes.index(p['code'])]
+    Ad2 = AD.copy(); Am2 = AM.copy()
+    for k in targets:
+        Ad2[:, k] += r * AM[:, k]
+        Am2[:, k] = (1 - r) * AM[:, k]
+    L2 = np.linalg.inv(np.eye(n) - Ad2)
+    x0 = L @ fdom; x1 = L2 @ fdom
+    imp0 = float((AM * x0[None, :]).sum()); imp1 = float((Am2 * x1[None, :]).sum())
+    va0 = float((vcoef * x0).sum()); va1 = float((vcoef * x1).sum())
+    replaceable = float(sum((AM[:, k] * x0[k]).sum() for k in targets))
+    d = x1 - x0
+    idx = np.argsort(-d)[:12]
+    return emit({'ratio': r * 100, 'targets': len(targets), 'replaceable': replaceable,
+                 'production0': float(x0.sum()), 'production1': float(x1.sum()),
+                 'valueAdded0': va0, 'valueAdded1': va1,
+                 'imports0': imp0, 'imports1': imp1,
+                 'rows': [{'code': codes[i], 'name': names[i], 'delta': float(d[i]), 'base': float(x0[i])}
+                          for i in idx if d[i] > 0]})
+
+def evaluate(payload):
+    """사업별 경제효과 비교(예산 1조원 = 1,000,000백만원 환산 포함)."""
+    items = json.loads(payload); n = len(codes); out = []
+    for it in items:
+        a = float(it['amount'])
+        if not np.isfinite(a) or a <= 0:
+            raise ValueError('예산은 양수여야 합니다.')
+        f = np.zeros(n); f[codes.index(it['code'])] = a
+        x = L @ f
+        pr = float(x.sum()); va = float((V @ f).sum()); im = float((M @ f).sum())
+        cp = float((income['comp'] * x).sum()) if income is not None else None
+        s = 1000000.0 / a
+        out.append({'code': it['code'], 'name': it['name'], 'amount': a,
+                    'production': pr, 'valueAdded': va, 'imports': im, 'compensation': cp,
+                    'multiplier': pr / a, 'vaMultiplier': va / a,
+                    'per': {'production': pr * s, 'valueAdded': va * s, 'imports': im * s,
+                            'compensation': (cp * s if cp is not None else None)}})
+    return emit({'rows': out})
+
+
+def price_shock(payload):
+    """가격 파급(Leontief 가격 모형, 완전 전가 가정).
+    domestic: 산업 k의 가격이 a만큼 오를 때 dp_j = a * L[k,j] / L[k,k]
+    import  : 수입재 i의 가격이 d_i 오를 때 비용상승 c_j = sum_i Am[i,j] d_i,  dp = L^T c"""
+    p = json.loads(payload); a = float(p['pct']) / 100.0
+    if not np.isfinite(a) or a <= 0:
+        raise ValueError('양의 상승률을 입력하세요.')
+    n = len(codes)
+    if p['mode'] == 'domestic':
+        if p['code'] == 'ALL':
+            raise ValueError('국내 가격 인상은 특정 산업을 선택하세요.')
+        k = codes.index(p['code'])
+        dp = a * L[k, :] / L[k, k]
+        direct = a * AD[k, :].copy(); direct[k] = 0.0    # 1차 비용상승(타 산업이 투입하는 k 비용 증가)
+    else:
+        delta = np.full(n, a) if p['code'] == 'ALL' else np.where(np.arange(n) == codes.index(p['code']), a, 0.0)
+        c = (AM * delta[:, None]).sum(axis=0)
+        dp = L.T @ c
+        direct = c
+    idx_all = np.argsort(-dp)
+    surplus = income['surplus'] if income is not None else None
+    rows = []
+    for i in idx_all[:15]:
+        sq = None
+        if surplus is not None and surplus[i] > 1e-12:
+            sq = float(direct[i] / surplus[i] * 100)
+        rows.append({'code': codes[i], 'name': names[i], 'dp': float(dp[i] * 100),
+                     'direct': float(direct[i] * 100), 'squeeze': sq})
+    index = None
+    if fdom is not None:
+        index = float((fdom / fdom.sum() * dp).sum() * 100)
+    return emit({'mode': p['mode'], 'pct': a * 100, 'index': index, 'mean': float(dp.mean() * 100),
+                 'max': float(dp.max() * 100), 'rows': rows})
+
+def extraction(payload):
+    """가상 제거법: 산업 k가 사라진다면(생산·투입 불가, 해당 최종수요도 소멸) 나머지 경제의 생산·부가가치 손실."""
+    if fdom is None:
+        raise ValueError('이 파일에서 국산 최종수요를 읽지 못해 계산할 수 없습니다.')
+    k = codes.index(json.loads(payload)['code']); n = len(codes)
+    keep = [i for i in range(n) if i != k]
+    Lm = L[np.ix_(keep, keep)] - np.outer(L[keep, k], L[k, keep]) / L[k, k]
+    x = L @ fdom
+    xnew = Lm @ fdom[keep]
+    d = x[keep] - xnew
+    out_loss = float(x[k] + d.sum())
+    va_loss = float(vcoef[k] * x[k] + (vcoef[keep] * d).sum())
+    order = np.argsort(-d)[:12]
+    return emit({'code': codes[k], 'name': names[k], 'own': float(x[k]),
+                 'outputLoss': out_loss, 'outputShare': out_loss / float(x.sum()) * 100,
+                 'vaLoss': va_loss, 'vaShare': va_loss / float((vcoef * x).sum()) * 100,
+                 'rows': [{'code': codes[keep[i]], 'name': names[keep[i]], 'delta': float(d[i]),
+                           'share': float(d[i] / x[keep[i]] * 100) if x[keep[i]] else 0.0}
+                          for i in order if d[i] > 0]})
