@@ -205,7 +205,13 @@ L = I + A<sup>d</sup> + (A<sup>d</sup>)² + …이므로 총 생산유발액 x =
 2. **Settings → Pages**에서 Source를 *Deploy from a branch*, Branch를 `main`, Folder를 `/ (root)`로 설정합니다.
 3. **Actions** 탭에서 배포 완료를 확인한 뒤 주소로 접속합니다.
 
-## 9. 기술 정보
+## 9. 문제 해결
+
+- 추가 분석 영역 맨 위에 **"버전 확인 완료"**가 보이면 `app.js`, `model.py`, `worker.js`가 모두 같은 버전입니다.
+- **붉은 경고 문구**가 보이면 해당 파일이 옛 버전입니다. 저장소 맨 위(최상위)에 최신 파일을 올리고 Commit changes를 누른 뒤 1~2분 후 Ctrl+Shift+R로 새로고침하세요.
+- 계산 중 오류가 나면 각 페이지의 상태 문구에 원인이 표시됩니다.
+
+## 10. 기술 정보
 
 - 프런트엔드: HTML, CSS, JavaScript
 - 계산: Pyodide 0.27.7 (NumPy, openpyxl 3.1.5), 브라우저의 Web Worker에서 실행
