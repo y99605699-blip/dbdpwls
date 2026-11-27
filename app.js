@@ -1,3 +1,4 @@
+const BUILD='2026-11-27-r2';
 const $=id=>document.getElementById(id);
 const fmt=x=>Number(x).toLocaleString('ko-KR',{maximumFractionDigits:3});
 let worker, nextId=0, requests=new Map(), sectors=[], rowChoices=[], cells=[], basket=[], result=null;
@@ -12,17 +13,17 @@ const DATASETS={
 let currentKey='basic';
 function text(tag,value){const e=document.createElement(tag);e.textContent=value;return e;}
 function call(type,payload){return new Promise((resolve,reject)=>{const id=++nextId;requests.set(id,{resolve,reject});worker.postMessage({id,type,payload});});}
-function startWorker(){worker=new Worker('./worker.js');worker.onmessage=({data:d})=>{if(d.type==='status'){$('status').textContent=d.text;return;}const p=requests.get(d.id);if(!p)return;requests.delete(d.id);d.ok?p.resolve(d.result):p.reject(Error(d.error));};worker.onerror=e=>{for(const p of requests.values())p.reject(Error(e.message||'Worker 실행 오류'));requests.clear();};}
+function startWorker(){worker=new Worker('./worker.js?v='+BUILD);worker.onmessage=({data:d})=>{if(d.type==='status'){$('status').textContent=d.text;return;}const p=requests.get(d.id);if(!p)return;requests.delete(d.id);d.ok?p.resolve(d.result):p.reject(Error(d.error));};worker.onerror=e=>{for(const p of requests.values())p.reject(Error(e.message||'Worker 실행 오류'));requests.clear();};}
 function options(el,list){el.replaceChildren(...list.map(x=>{const o=document.createElement('option');o.value=x.code;o.textContent=x.code+' '+x.name;return o;}));}
 function invalidate(){result=null;$('results').hidden=true;}
 async function load(buffer){
  invalidate();basket=[];renderBasket();
  for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount'])$(id).disabled=true;
  if(worker)worker.terminate();for(const p of requests.values())p.reject(Error('데이터 다시 로드'));requests.clear();startWorker();
- try{const info=await call('init',buffer);sectors=info.sectors;options($('sector'),sectors);$('sector-search').value='';$('row-search').value='';$('col-search').value='';$('sheet').replaceChildren(...info.sheets.map(s=>{const o=text('option',s);o.value=s;return o;}));
+ try{const info=await call('init',buffer);checkVersions(info);sectors=info.sectors;options($('sector'),sectors);$('sector-search').value='';$('row-search').value='';$('col-search').value='';$('sheet').replaceChildren(...info.sheets.map(s=>{const o=text('option',s);o.value=s;return o;}));
  $('validation').textContent=JSON.stringify(info.residuals,null,2)+'\n최대 절대 잔차: 허용값 1e-8 미만';
  for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount'])$(id).disabled=false;
- await explore();loadLinkage();loadDemand();initAnalysis();$('status').textContent='준비 완료 · '+DATASETS[currentKey].label+' · '+sectors.length+'개 부문 · '+info.sheets.length+'개 시트 · 계수 검증 통과';
+ await explore();loadLinkage();loadDemand();try{initAnalysis();}catch(e){banner('분석 페이지 초기화 오류: '+e.message);}$('status').textContent='준비 완료 · '+DATASETS[currentKey].label+' · '+sectors.length+'개 부문 · '+info.sheets.length+'개 시트 · 계수 검증 통과';
  }catch(e){$('status').textContent='준비 실패: '+e.message+' — 새로고침 후 재시도하세요.';}
 }
 let exploreSeq=0;
@@ -48,7 +49,10 @@ const f3=x=>Number(x).toLocaleString('ko-KR',{minimumFractionDigits:3,maximumFra
 const host=document.getElementById('simulation')||document.querySelector('main')||document.body;
 const WRAP='overflow-x:auto;max-height:480px;overflow-y:auto';
 const CARDS='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0';
-function mkSection(id,html,after){const s=document.createElement('section');s.id=id;if(host.className)s.className=host.className;s.innerHTML=html;after.insertAdjacentElement('afterend',s);return s;}
+const tabs=[];
+function showTab(id){for(const t of tabs){const on=t.id===id;t.s.style.display=on?'':'none';t.b.style.fontWeight=on?'700':'400';t.b.style.outline=on?'2px solid #2e86c1':'none';}}
+function mkSection(id,html,_after){const m=html.match(/<h2>([^<]+)<\/h2>/),full=m?m[1]:id,label=full.split(/ — |:/)[0];const s=document.createElement('section');s.id=id;if(host.className)s.className=host.className;s.innerHTML=html;s.style.display=tabs.length?'none':'';anaBox.append(s);const b=text('button',label);b.type='button';b.onclick=()=>showTab(id);tabBar.append(b);tabs.push({id,s,b});return s;}
+function reveal(id){const e=$(id);if(e&&e.scrollIntoView)e.scrollIntoView({behavior:'smooth',block:'nearest'});}
 function mkTable(headers,rows){const t=document.createElement('table'),th=document.createElement('thead'),tr=document.createElement('tr');headers.forEach(h=>tr.append(text('th',h)));th.append(tr);const tb=document.createElement('tbody');rows.forEach(r=>{const x=document.createElement('tr');r.forEach(v=>x.append(text('td',v)));tb.append(x);});t.append(th,tb);return t;}
 function barRow(label,value,max,unit){const d=text('div',label+' · '+fmt(value)+unit);d.className='bar';const t=document.createElement('div');t.className='track';const f=document.createElement('div');f.className='fill';f.style.width=Math.max(0,Math.min(100,max>0?value/max*100:0))+'%';t.append(f);d.append(t);return d;}
 function cardEl(title,value,unit){const d=text('div',title);d.className='card';d.append(text('strong',value),text('span',unit));return d;}
@@ -58,10 +62,21 @@ function pickerHTML(p){return '<input id="'+p+'-search" type="search" placeholde
 function wirePicker(p,extra){const get=()=>{let e=typeof extra==='function'?extra():extra;if(e===true)e={value:'ALL',label:'전체 산업 (전 부문 일괄)'};return e||null;};const fill=()=>{const q=$(p+'-search').value.trim();options($(p+'-sector'),sectors.filter(s=>(s.code+' '+s.name).includes(q)));const e=get();if(e){const o=text('option',e.label);o.value=e.value;$(p+'-sector').prepend(o);$(p+'-sector').selectedIndex=0;}};pickers[p]=fill;$(p+'-search').oninput=fill;}
 function enablePicker(p){$(p+'-search').value='';pickers[p]();$(p+'-search').disabled=false;$(p+'-sector').disabled=false;}
 
-// 페이지 이동 메뉴
-const nav=document.createElement('nav');nav.style.cssText='margin:16px 0;display:flex;flex-wrap:wrap;gap:12px';
-nav.innerHTML='<strong>추가 분석</strong><a href="#linkage">3 연쇄효과</a><a href="#demand">4 수요 구조</a><a href="#public">5 공공투자 평가</a><a href="#supply">6 공급망·수입대체</a><a href="#paths">7 파급경로</a><a href="#price">8 가격 파급</a><a href="#extract">9 가상 제거법</a><a href="#scorecard">10 스코어카드</a>';
-host.insertAdjacentElement('afterend',nav);
+// 분석 영역(탭) + 오류·버전 표시
+const anaBox=document.createElement('div');anaBox.id='analysis';anaBox.style.cssText='margin-top:24px';
+host.insertAdjacentElement('afterend',anaBox);
+const nav=anaBox;
+const bannerEl=document.createElement('div');bannerEl.id='ana-banner';bannerEl.style.cssText='display:none;padding:10px 12px;border:1px solid #c0392b;color:#c0392b;border-radius:6px;margin:10px 0;white-space:pre-wrap';
+const verEl=text('p','분석 모듈 버전 '+BUILD+' · 자료를 불러오면 model.py·worker.js 버전을 확인합니다.');verEl.id='ana-ver';
+const tabBar=document.createElement('div');tabBar.id='ana-tabs';tabBar.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin:12px 0';
+anaBox.append(text('h2','추가 분석 (3~10)'),verEl,bannerEl,tabBar);
+function banner(msg){bannerEl.style.display=msg?'block':'none';bannerEl.textContent=msg||'';}
+function checkVersions(info){const bad=[];if(info.build!==BUILD)bad.push('model.py');if(info.workerBuild!==BUILD)bad.push('worker.js');
+ if(bad.length){banner('⚠ '+bad.join(', ')+' 파일이 app.js와 다른(옛) 버전입니다.\nGitHub 저장소 맨 위(최상위)에 최신 파일을 업로드하고 Commit changes를 누른 뒤, 1~2분 후 Ctrl+Shift+R로 새로고침하세요.\n(app.js 버전 '+BUILD+', model.py '+(info.build||'옛 버전')+', worker.js '+(info.workerBuild||'옛 버전')+')');verEl.textContent='버전 불일치: app.js '+BUILD+' / model.py '+(info.build||'옛 버전')+' / worker.js '+(info.workerBuild||'옛 버전');}
+ else{banner('');verEl.textContent='버전 확인 완료: app.js · model.py · worker.js 모두 '+BUILD;}}
+window.addEventListener('error',e=>banner('스크립트 오류: '+e.message));
+window.addEventListener('unhandledrejection',e=>banner('처리되지 않은 오류: '+((e.reason&&e.reason.message)||e.reason)));
+const tip=document.createElement('div');tip.id='ana-tip';tip.style.cssText='position:fixed;pointer-events:none;display:none;background:#222;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;z-index:9999;max-width:260px';document.body.append(tip);
 
 // ---------- 3. 연쇄효과 ----------
 let linkRows=[];
@@ -69,6 +84,7 @@ const linkSec=mkSection('linkage',`
 <h2>3. 산업 연쇄효과 분석</h2>
 <p>생산유발계수 역행렬의 열합·행합으로 산출합니다. 영향력계수(후방연쇄)와 감응도계수(전방연쇄)는 전 산업 평균을 1로 한 상대값입니다(단위 없음). 변동계수는 파급효과가 특정 산업에 쏠린 정도로, 클수록 몇몇 산업에만 효과가 집중됩니다. 유발계수 합은 최종수요 1원당 유발되는 금액(원/원)입니다.</p>
 <div id="link-plot"></div>
+<p id="link-pick" style="min-height:1.4em"></p>
 <div>
  <input id="link-search" type="search" placeholder="산업 검색" disabled>
  <select id="link-sort" disabled>
@@ -98,9 +114,9 @@ function renderScatter(){
  s+='<text x="'+(P+6)+'" y="'+(H-P-6)+'" font-size="12" fill="currentColor" opacity=".7">독립 산업</text>';
  s+='<text x="'+(W/2)+'" y="'+(H-10)+'" text-anchor="middle" font-size="12" fill="currentColor">영향력계수 (후방연쇄) →</text>';
  s+='<text transform="translate(14 '+(H/2)+') rotate(-90)" text-anchor="middle" font-size="12" fill="currentColor">감응도계수 (전방연쇄) →</text>';
- for(const r of linkRows){const c=TYPE_COLOR[r.type.slice(0,2)]||'#8e8e93';s+='<circle cx="'+sx(r.influence).toFixed(1)+'" cy="'+sy(r.sensitivity).toFixed(1)+'" r="'+(lab?5:3.5)+'" fill="'+c+'" fill-opacity=".75"><title>'+esc(r.code+' '+r.name+' · 영향력 '+f3(r.influence)+' / 감응도 '+f3(r.sensitivity))+'</title></circle>';
+ for(const r of linkRows){const c=TYPE_COLOR[r.type.slice(0,2)]||'#8e8e93';s+='<circle cx="'+sx(r.influence).toFixed(1)+'" cy="'+sy(r.sensitivity).toFixed(1)+'" r="'+(lab?5:3.5)+'" fill="'+c+'" fill-opacity=".75" style="cursor:pointer" data-tip="'+esc(r.code+' '+r.name+' · 영향력 '+f3(r.influence)+' / 감응도 '+f3(r.sensitivity))+'"><title>'+esc(r.code+' '+r.name+' · 영향력 '+f3(r.influence)+' / 감응도 '+f3(r.sensitivity))+'</title></circle>';
   if(lab)s+='<text x="'+(sx(r.influence)+7).toFixed(1)+'" y="'+(sy(r.sensitivity)+4).toFixed(1)+'" font-size="9" fill="currentColor" opacity=".75">'+esc(r.code)+'</text>';}
- s+='</svg><p>점에 마우스를 올리면 산업명이 보입니다. 점선은 평균(1)입니다.</p>';
+ s+='</svg><p>점에 마우스를 올리거나 클릭하면 산업 정보가 보입니다. 점선은 평균(1)입니다.</p>';
  $('link-plot').innerHTML=s;
 }
 function renderLinkage(){
@@ -115,6 +131,9 @@ async function loadLinkage(){
  try{linkRows=(await call('linkage')).rows;renderScatter();renderLinkage();renderImportRank();renderExtRank();for(const id of ['link-search','link-sort','link-type'])$(id).disabled=false;}
  catch(e){$('link-status').textContent='연쇄효과 계산 실패: '+e.message;}
 }
+$('link-plot').addEventListener('mousemove',e=>{const t=e.target.closest?e.target.closest('[data-tip]'):null;if(t){tip.textContent=t.getAttribute('data-tip');tip.style.display='block';tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY+12)+'px';}else tip.style.display='none';});
+$('link-plot').addEventListener('mouseleave',()=>{tip.style.display='none';});
+$('link-plot').addEventListener('click',e=>{const t=e.target.closest?e.target.closest('[data-tip]'):null;if(t)$('link-pick').textContent='선택: '+t.getAttribute('data-tip');});
 $('link-search').oninput=renderLinkage;$('link-sort').onchange=renderLinkage;$('link-type').onchange=renderLinkage;
 
 // ---------- 4. 최종수요 구조 ----------
@@ -136,8 +155,9 @@ const demSec=mkSection('demand',`
  <select id="dem-type" disabled><option value="">전체 유형</option>${Object.values(DEMLAB).map(v=>'<option>'+v+'</option>').join('')}</select>
 </div>
 <p id="dem-status">분류를 불러오면 표시됩니다.</p>
+<h3 id="dem-detail-title">아래 표에서 산업 행을 클릭하면 이곳에 상세 구성이 표시됩니다</h3><div id="dem-detail"></div>
 <div style="${WRAP}"><table><thead><tr><th>코드</th><th>산업</th><th>생산유발액(백만원)</th><th>민간소비 %</th><th>정부소비 %</th><th>민간투자 %</th><th>정부투자 %</th><th>수출 %</th><th>공공수요 %</th><th>주도 수요</th></tr></thead><tbody id="dem-rows"></tbody></table></div>
-<h3 id="dem-detail-title">행을 클릭하면 상세 구성이 표시됩니다</h3><div id="dem-detail"></div>`,linkSec);
+`,linkSec);
 for(const [lab,kw] of [['전력','전력'],['가스','가스'],['건설','건설'],['운송','운송'],['수도','수도'],['보건','보건'],['통신','통신']]){const b=text('button',lab);b.type='button';b.onclick=()=>{$('dem-search').value=kw;renderDemand();};$('dem-chips').append(b,' ');}
 const demClear=text('button','전체');demClear.type='button';demClear.onclick=()=>{$('dem-search').value='';renderDemand();};$('dem-chips').append(demClear);
 function demCompute(){return demData.rows.map(r=>{const t=r.total>0?r.total:1,sh=c=>(r.by[c]||0)/t*100;const g={'9111':sh('9111'),'9112':sh('9112'),'9121':sh('9121'),'9122':sh('9122'),'9140':sh('9140'),other:((r.by['9131']||0)+(r.by['9132']||0))/t*100};let lead='other',mx=-1e18;for(const k in g)if(g[k]>mx){mx=g[k];lead=k;}return {...r,sh:g,pub:g['9112']+g['9122'],inv:g['9121']+g['9122'],type:DEMLAB[lead]};});}
@@ -155,7 +175,7 @@ function renderDemand(){
  const q=$('dem-search').value.trim(),t=$('dem-type').value,k=$('dem-sort').value;
  const key={total:r=>r.total,export:r=>r.sh['9140'],public:r=>r.pub,cons:r=>r.sh['9111'],invest:r=>r.inv}[k];
  const list=demAll.filter(r=>(r.code+' '+r.name).includes(q)&&(!t||r.type===t)).sort((a,b)=>key(b)-key(a));
- $('dem-rows').replaceChildren(...list.map(r=>{const tr=document.createElement('tr');tr.style.cursor='pointer';if(r.code===demSel)tr.style.background='rgba(127,127,127,.2)';[r.code,r.name,fmt(r.total),f1(r.sh['9111']),f1(r.sh['9112']),f1(r.sh['9121']),f1(r.sh['9122']),f1(r.sh['9140']),f1(r.pub),r.type].forEach(v=>tr.append(text('td',v)));tr.onclick=()=>{demSel=r.code;renderDemand();renderDemDetail();};return tr;}));
+ $('dem-rows').replaceChildren(...list.map(r=>{const tr=document.createElement('tr');tr.style.cursor='pointer';if(r.code===demSel)tr.style.outline='2px solid #2e86c1';[r.code,r.name,fmt(r.total),f1(r.sh['9111']),f1(r.sh['9112']),f1(r.sh['9121']),f1(r.sh['9122']),f1(r.sh['9140']),f1(r.pub),r.type].forEach(v=>tr.append(text('td',v)));tr.onclick=()=>{demSel=r.code;renderDemand();renderDemDetail();reveal('dem-detail-title');};return tr;}));
  $('dem-status').textContent=list.length+'개 산업 표시 (전체 '+demAll.length+'개). 행을 클릭하면 아래에 상세 구성이 나옵니다.';
 }
 function renderDemDetail(){
@@ -177,7 +197,7 @@ const pubSec=mkSection('public',`
 <h2>5. 공공투자 사업 경제효과 비교</h2>
 <p>사업을 해당 산업의 최종수요 증가로 보고 생산·부가가치·수입 유발액을 구합니다. 부가가치는 피용자보수(임금) 등으로 나눠 볼 수 있어 <b>임금으로 돌아가는 몫</b>까지 비교합니다(고용 자료가 없어 일자리 수 대신 노동소득을 사용). 예산이 달라도 공정하게 비교하도록 <b>예산 1조원(=1,000,000백만원)당</b> 값으로 환산합니다.</p>
 <div id="pub-chips">바로 추가(예산 1조원): </div>
-<form id="pub-form">${pickerHTML('pub')} <input id="pub-amount" type="number" min="1" step="1" value="1000000" disabled> 백만원 <button id="pub-add" type="submit" disabled>사업 추가</button> <button id="pub-clear" type="button">비우기</button></form>
+<form id="pub-form" novalidate>${pickerHTML('pub')} <input id="pub-amount" type="number" min="1" step="1" value="1000000" disabled> 백만원 <button id="pub-add" type="submit" disabled>사업 추가</button> <button id="pub-clear" type="button">비우기</button></form>
 <ul id="pub-list"></ul>
 <button id="pub-run" type="button" disabled>경제효과 비교 계산</button>
 <p id="pub-status">사업을 추가하세요.</p>
@@ -207,14 +227,14 @@ function renderPubResult(){
  if(hasW){const mxW=Math.max(...rows.map(r=>r.per.compensation),1);out.push(text('h3','예산 1조원당 임금(피용자보수)유발액 (백만원)'),...rows.map(r=>barRow(r.code+' '+r.name,r.per.compensation,mxW,'백만원')));}
  const bv=[...rows].sort((a,b)=>b.per.valueAdded-a.per.valueAdded)[0],bi=[...rows].sort((a,b)=>a.per.imports-b.per.imports)[0];
  out.push(text('p','1조원당 부가가치유발액이 가장 큰 사업은 '+bv.name+'이고, 수입유발액이 가장 작은(국내 환류가 큰) 사업은 '+bi.name+'입니다. 승수는 투입계수가 고정된 선형 모형의 결과이며 공급 제약과 가격 변화는 반영하지 않습니다.'));
- o.replaceChildren(...out);
+ o.replaceChildren(...out);reveal('pub-out');
 }
 
 // ---------- 6. 공급망·수입대체 ----------
 const supSec=mkSection('supply',`
 <h2>6. 공급망 안정성: 수입대체 시뮬레이션</h2>
 <p>선택한 산업(또는 전 산업)이 쓰는 <b>수입 중간재의 일부를 같은 산업의 국산품으로 바꿨을 때</b>, 현재 국산 최종수요(국산거래표 최종수요계)를 충족하기 위한 생산·부가가치·수입이 어떻게 변하는지 계산합니다. 가격·품질이 같고 국내 공급여력이 충분하다고 가정하므로, 증가율이 매우 큰 산업은 현실적 공급 가능성을 따로 확인해야 합니다.</p>
-<form id="sup-form">${pickerHTML('sup')} 대체 비율 <input id="sup-ratio" type="number" min="1" max="100" step="1" value="10" disabled>% <button id="sup-run" type="submit" disabled>계산</button></form>
+<form id="sup-form" novalidate>${pickerHTML('sup')} 대체 비율 <input id="sup-ratio" type="number" min="1" max="100" step="1" value="10" disabled>% <button id="sup-run" type="submit" disabled>계산</button></form>
 <p id="sup-status">분류를 불러오면 사용할 수 있습니다.</p>
 <div id="sup-out"></div>
 <h3>수입 의존도가 높은 산업 TOP 10 (직접 수입의존도 = 투입 중 수입 중간재 비율)</h3>
@@ -237,7 +257,7 @@ $('sup-form').onsubmit=async e=>{
   $('sup-out').replaceChildren(
    (()=>{const d=document.createElement('div');d.style.cssText=CARDS;d.append(cardEl('대체 대상 수입 중간재',fmt(r.replaceable),'백만원'),cardEl('생산 증가',fmt(dP),'백만원 (+'+f1(dP/r.production0*100)+'%)'),cardEl('부가가치 증가',fmt(dV),'백만원 (+'+f1(dV/r.valueAdded0*100)+'%)'),cardEl('수입 감소',fmt(dI),'백만원 (-'+f1(dI/r.imports0*100)+'%)'));return d;})(),
    text('h3','생산이 가장 크게 늘어나는 산업'),w);
-  $('sup-status').textContent=(code==='ALL'?'전 산업':secName(code))+' 수입 중간재 '+r.ratio+'% 국산 대체 결과입니다.';
+  $('sup-status').textContent=(code==='ALL'?'전 산업':secName(code))+' 수입 중간재 '+r.ratio+'% 국산 대체 결과입니다.';reveal('sup-out');
  }catch(err){$('sup-status').textContent='계산 실패: '+err.message;}finally{$('sup-run').disabled=false;}
 };
 
@@ -245,7 +265,7 @@ $('sup-form').onsubmit=async e=>{
 const pathSec=mkSection('paths',`
 <h2>7. 파급경로 추적: 수요가 퍼지는 단계</h2>
 <p>한 산업에 수요가 생기면 먼저 그 산업이 생산하고(0차), 필요한 중간재를 만드는 산업이 생산하며(1차), 그 산업들의 중간재를 만드는 산업이 다시 생산하는(2차) 식으로 퍼집니다. 총 생산유발액 = 0차 + 1차 + 2차 + … (역행렬의 급수 전개)로, 단계별 크기와 주요 산업을 보여 줍니다.</p>
-<form id="path-form">${pickerHTML('path')} <input id="path-amount" type="number" min="1" step="1" value="1000" disabled> 백만원 <button id="path-run" type="submit" disabled>경로 분해</button></form>
+<form id="path-form" novalidate>${pickerHTML('path')} <input id="path-amount" type="number" min="1" step="1" value="1000" disabled> 백만원 <button id="path-run" type="submit" disabled>경로 분해</button></form>
 <p id="path-status">분류를 불러오면 사용할 수 있습니다.</p>
 <div id="path-out"></div>`,supSec);
 wirePicker('path',false);
@@ -260,7 +280,7 @@ $('path-form').onsubmit=async e=>{
   const d=document.createElement('div');d.style.cssText=CARDS;d.append(cardEl('수요 증가액',fmt(r.demand),'백만원'),cardEl('총 생산유발액',fmt(r.total),'백만원'),cardEl('생산승수',f3(r.total/r.demand),'배'));
   $('path-out').replaceChildren(d,text('h3','단계별 생산유발액'),...r.rounds.map(x=>barRow(x.label+' ('+f1(x.amount/r.total*100)+'%)',x.amount,mx,'백만원')),
    text('h3','1차: 직접 투입을 공급하는 상위 산업'),lst(r.top1),text('h3','2차: 투입의 투입을 공급하는 상위 산업'),lst(r.top2),text('h3','전체 단계 합산 상위 산업'),lst(r.topAll));
-  $('path-status').textContent=secName(code)+' 수요 '+fmt(amount)+'백만원의 파급경로입니다.';
+  $('path-status').textContent=secName(code)+' 수요 '+fmt(amount)+'백만원의 파급경로입니다.';reveal('path-out');
  }catch(err){$('path-status').textContent='계산 실패: '+err.message;}finally{$('path-run').disabled=false;}
 };
 
@@ -269,7 +289,7 @@ const priceSec=mkSection('price',`
 <h2>8. 요금·원자재 가격 파급 시뮬레이터</h2>
 <p>전기·가스·수도 요금이 오르거나 환율·국제 원자재 가격 때문에 수입재 가격이 오르면, 산업 비용과 물가가 얼마나 오를까요? 투입산출표의 <b>가격 모형(Leontief price model)</b>으로 계산합니다. 오른 비용이 하류 산업의 가격에 <b>모두 전가</b>된다고 가정한 상한 추정이며, 수요 변화는 반영하지 않습니다.</p>
 <div id="pr-chips">바로 실행: </div>
-<form id="pr-form">
+<form id="pr-form" novalidate>
  <select id="pr-mode" disabled><option value="domestic">국내 산업 가격(요금) 인상</option><option value="import">수입재 가격 상승 (환율·원자재)</option></select>
  ${pickerHTML('pr')} <input id="pr-pct" type="number" min="0.1" step="0.1" value="10" disabled>% <button id="pr-run" type="submit" disabled>계산</button>
 </form>
@@ -292,7 +312,7 @@ async function runPrice(){
   const mx=Math.max(...r.rows.map(x=>x.dp),0.0001);
   $('pr-out').replaceChildren(d,text('h3','가격이 가장 크게 오르는 산업 (상위 15개)'),...r.rows.map(x=>barRow(x.code+' '+x.name,x.dp,mx,'%')),text('h3','상세'),w,
    text('p','해석: 1차 비용상승률은 충격이 처음 닿는 직접 비용 증가분이고, 가격 상승률은 하류로 전가가 끝난 뒤의 값입니다. 마지막 열은 해당 산업이 가격을 올리지 못할 때 1차 비용 증가가 영업잉여(이윤)를 몇 % 줄이는지의 근사입니다. 값이 큰 산업은 요금·원자재 충격에 수익성이 취약합니다.'));
-  $('pr-status').textContent=what+' 시나리오 결과입니다.';
+  $('pr-status').textContent=what+' 시나리오 결과입니다.';reveal('pr-out');
  }catch(e){$('pr-status').textContent='계산 실패: '+e.message;}finally{$('pr-run').disabled=false;}
 }
 $('pr-form').onsubmit=e=>{e.preventDefault();runPrice();};
@@ -308,8 +328,9 @@ const extSec=mkSection('extract',`
 <p>한 산업이 완전히 사라져 생산도 투입도 할 수 없다고 가정하고, 나머지 산업이 남은 국산 최종수요를 맞추도록 다시 균형을 잡았을 때 사라지는 총산출·부가가치의 비중입니다. 영향력계수(후방)와 감응도계수(전방)가 각각 한쪽 방향만 본다면, 이 지표는 <b>양쪽을 한꺼번에 반영한 구조적 중요도</b>입니다. 손실에는 그 산업 자신의 산출도 포함됩니다.</p>
 <div><input id="ext-search" type="search" placeholder="산업 검색" disabled></div>
 <p id="ext-status">분류를 불러오면 표시됩니다. 행을 클릭하면 어떤 산업이 가장 크게 타격받는지 나옵니다.</p>
+<h3 id="ext-title"></h3><div id="ext-out"></div>
 <div style="${WRAP}"><table><thead><tr><th>순위</th><th>코드</th><th>산업</th><th>총산출 손실(%)</th><th>부가가치 손실(%)</th><th>영향력계수</th><th>감응도계수</th><th>유형</th></tr></thead><tbody id="ext-rows"></tbody></table></div>
-<h3 id="ext-title"></h3><div id="ext-out"></div>`,priceSec);
+`,priceSec);
 let extSel=null;
 function renderExtRank(){
  const base=linkRows.filter(r=>r.extOutput!==null&&r.extOutput!==undefined).sort((a,b)=>b.extOutput-a.extOutput);
@@ -317,7 +338,7 @@ function renderExtRank(){
  const q=$('ext-search').value.trim();
  const rank=new Map(base.map((r,i)=>[r.code,i+1]));
  const list=base.filter(r=>(r.code+' '+r.name).includes(q));
- $('ext-rows').replaceChildren(...list.map(r=>{const tr=document.createElement('tr');tr.style.cursor='pointer';if(r.code===extSel)tr.style.background='rgba(127,127,127,.2)';[rank.get(r.code),r.code,r.name,f3(r.extOutput),f3(r.extVA),f3(r.influence),f3(r.sensitivity),r.type].forEach(v=>tr.append(text('td',v)));tr.onclick=()=>{extSel=r.code;renderExtRank();loadExtraction(r.code);};return tr;}));
+ $('ext-rows').replaceChildren(...list.map(r=>{const tr=document.createElement('tr');tr.style.cursor='pointer';if(r.code===extSel)tr.style.outline='2px solid #2e86c1';[rank.get(r.code),r.code,r.name,f3(r.extOutput),f3(r.extVA),f3(r.influence),f3(r.sensitivity),r.type].forEach(v=>tr.append(text('td',v)));tr.onclick=()=>{extSel=r.code;renderExtRank();loadExtraction(r.code);reveal('ext-title');};return tr;}));
  $('ext-status').textContent=list.length+'개 산업 표시. 행을 클릭하면 아래에 상세 영향이 나옵니다.';
  $('ext-search').disabled=false;
 }
@@ -345,7 +366,7 @@ const scSec=mkSection('scorecard',`
 <li><b>제거 시 손실</b>: 가상 제거법의 총산출 손실</li>
 <li><b>물가 파급력</b>: 이 산업 가격이 오를 때 국내 최종수요 물가에 미치는 영향</li>
 </ul>
-<form id="sc-form">산업 A ${pickerHTML('sc-a')} 비교 산업 B ${pickerHTML('sc-b')} <button id="sc-run" type="submit" disabled>스코어카드 보기</button></form>
+<form id="sc-form" novalidate>산업 A ${pickerHTML('sc-a')} 비교 산업 B ${pickerHTML('sc-b')} <button id="sc-run" type="submit" disabled>스코어카드 보기</button></form>
 <p id="sc-status">분류를 불러오면 사용할 수 있습니다.</p>
 <div id="sc-out"></div>`,extSec);
 wirePicker('sc-a',null);wirePicker('sc-b',{value:'',label:'(비교 안 함)'});
@@ -377,6 +398,7 @@ function renderScore(){
 }
 $('sc-form').onsubmit=e=>{e.preventDefault();renderScore();};
 
+showTab('linkage');
 // ---------- 분류를 불러온 뒤 새 페이지 활성화 ----------
 function initAnalysis(){
  pubBasket=[];pubRes=null;renderPubList();$('pub-out').replaceChildren();$('sup-out').replaceChildren();$('path-out').replaceChildren();
